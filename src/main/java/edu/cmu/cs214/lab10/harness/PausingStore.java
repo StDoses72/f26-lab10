@@ -110,6 +110,11 @@ public final class PausingStore implements BookingStore {
     }
 
     @Override
+    public boolean insertIfAvailable(Booking booking) {
+        return delegate.insertIfAvailable(booking);
+    }
+
+    @Override
     public List<Booking> bookingsForRoom(String roomId) {
         return gate("bookingsForRoom", () -> delegate.bookingsForRoom(roomId));
     }

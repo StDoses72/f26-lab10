@@ -21,11 +21,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Thread safety: safe for concurrent use. The service owns no mutable
  * booking state of its own. The room catalog is built once in the constructor
- * and never written again, and every read and write of booking data goes
- * through {@link BookingStore}, whose methods are each synchronized. Since the
- * store is thread safe, the operations built on top of it are too. The only
- * other field that changes after construction is {@link BookingStats}, and its
- * numbers are documented as approximate.
+ * and never written again. Booking availability and insertion use one atomic
+ * {@link BookingStore} operation, as do cancellation and promotion. IDs use
+ * an atomic counter per service; {@link BookingStats} remains approximate.
  */
 public final class BookingService {
 
@@ -67,18 +65,10 @@ public final class BookingService {
         if (startMinute < 0 || endMinute <= startMinute) {
             return reject(roomId, startMinute, endMinute, "empty or reversed slot");
         }
-        if (store.hasOverlap(roomId, startMinute, endMinute)) {
-            return reject(roomId, startMinute, endMinute, "slot already held");
-        }
         Booking booking = new Booking(nextId(), roomId, startMinute, endMinute, BookingStatus.CONFIRMED);
-        // Defensive re-check. Another request can take the slot between the
-        // check above and the insert below, so read the store once more right
-        // before writing. With the freshest possible answer in hand there is no
-        // window left for a second booking to slip through.
-        if (store.hasOverlap(roomId, startMinute, endMinute)) {
+        if (!store.insertIfAvailable(booking)) {
             return reject(roomId, startMinute, endMinute, "slot already held");
         }
-        store.insert(booking);
         stats.recordConfirmed();
         BookingLog.confirmed(booking);
         return BookingResult.confirmed(booking);

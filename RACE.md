@@ -237,26 +237,178 @@ race.confirmed count=2
 [INFO] BUILD FAILURE
 ```
 
-The teammate's patch remains applied only to reproduce this review evidence;
-it is not accepted as the final fix. Before milestone 3, undo it with
-`git apply -R proposed-fix.diff` and build the chosen fix on the shipped code.
-Milestone 3 has not been started.
+At the end of milestone 2, the teammate's patch remained applied only to
+reproduce this review evidence; it was not accepted as the final fix.
+Commit `7eeb95d` preserves that review state. Milestone 3 below starts by
+undoing it with `git apply -R proposed-fix.diff`.
 
 ---
 
 ## Milestone 3: the fix you would ship
 
-**Which option, and what you changed.** Name the lock or the atomic operation
-and the two operations it now covers. Paste the diff of your change and the
-passing run of your milestone-1 test and the full suite.
+**Which option, and what you changed: option 2, an atomic store operation.**
+First reversed `proposed-fix.diff` and checked that `BookingService.java`
+matched the shipped version at `a8dc8f5`. The fix is built on that version,
+not on the teammate's recheck.
 
-**Is your milestone-1 test still testing anything?** After your fix, describe
-what that test now exercises. Did `PausingStore` pause a call during the green run? How do
-you know?
+Added the plain, non-default method `boolean insertIfAvailable(Booking)` to
+`BookingStore`. `InMemoryBookingStore` implements it as one synchronized
+operation: check for overlapping CONFIRMED bookings using the existing
+`overlapsConfirmed()` helper, then append only if the slot is free. Both steps
+hold the monitor of the same store instance, the lock already used by all
+other store operations, including cancellation/promotion.
 
-**What runs one at a time now that ran in parallel before.** Name concretely which callers
-queue behind which. "Nothing, it is just correct now" does not count as an
-answer.
+`BookingService.book()` now makes that one atomic call and rejects the request
+when it returns false. The incorrect class-level thread-safety explanation was
+updated. The service still validates room/range before attempting the booking;
+overlap rejections can now consume an ID because the candidate is constructed
+before the atomic decision. IDs remain unique within one service, but are not
+promised to be gap-free.
 
-**What you left unfixed.** For anything your review flagged that you chose not
-to fix, one line each on why.
+**Required interface/compiler check:** after adding the interface method and
+real implementation, `mvn -B '-Dstyle.color=never' compile` failed at
+2026-11-06 13:00:08 -05:00 with one compiler error: `PausingStore` did not
+implement `insertIfAvailable(Booking)`. Added its direct delegation to the
+wrapped store, as instructed. No default method or separate check/write
+fallback was added.
+
+**Implementation diff against the shipped code** (four production files):
+
+```diff
+diff --git a/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java b/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java
+index 5e6b639..2217dfb 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java
++++ b/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java
+@@ -111,0 +112,5 @@ public final class PausingStore implements BookingStore {
++    @Override
++    public boolean insertIfAvailable(Booking booking) {
++        return delegate.insertIfAvailable(booking);
++    }
++
+diff --git a/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java b/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java
+index 514c3e1..7baed5b 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java
++++ b/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java
+@@ -24,5 +24,3 @@ import java.util.concurrent.atomic.AtomicLong;
+- * and never written again, and every read and write of booking data goes
+- * through {@link BookingStore}, whose methods are each synchronized. Since the
+- * store is thread safe, the operations built on top of it are too. The only
+- * other field that changes after construction is {@link BookingStats}, and its
+- * numbers are documented as approximate.
++ * and never written again. Booking availability and insertion use one atomic
++ * {@link BookingStore} operation, as do cancellation and promotion. IDs use
++ * an atomic counter per service; {@link BookingStats} remains approximate.
+@@ -70 +68,2 @@ public final class BookingService {
+-        if (store.hasOverlap(roomId, startMinute, endMinute)) {
++        Booking booking = new Booking(nextId(), roomId, startMinute, endMinute, BookingStatus.CONFIRMED);
++        if (!store.insertIfAvailable(booking)) {
+@@ -73,2 +71,0 @@ public final class BookingService {
+-        Booking booking = new Booking(nextId(), roomId, startMinute, endMinute, BookingStatus.CONFIRMED);
+-        store.insert(booking);
+diff --git a/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java b/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java
+index 3ae3544..d8e0375 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java
++++ b/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java
+@@ -30,0 +31,8 @@ public interface BookingStore {
++    /**
++     * Checks for overlapping CONFIRMED bookings and inserts the candidate only
++     * if none exist, atomically with respect to all other store operations.
++     *
++     * @return true if inserted, or false if the slot is taken and nothing changed
++     */
++    boolean insertIfAvailable(Booking booking);
++
+diff --git a/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java b/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java
+index f7fd85f..86331d6 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java
++++ b/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java
+@@ -38,0 +39,9 @@ public final class InMemoryBookingStore implements BookingStore {
++    @Override
++    public synchronized boolean insertIfAvailable(Booking booking) {
++        if (overlapsConfirmed(booking)) {
++            return false;
++        }
++        bookings.add(booking);
++        return true;
++    }
++
+```
+
+**Passing milestone-1 and milestone-2 tests:** ran
+`mvn -B '-Dstyle.color=never' '-Dtest=RaceTest' test` (exit code 0).
+Verbatim output excerpts:
+
+```text
+2026-11-06T18:01:01.325Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=900 end=960
+2026-11-06T18:01:03.321Z INFO booking.rejected room=WEH-5409 start=900 end=960 reason=slot already held
+race.gate target=hasOverlap call=1 paused=false fired=false calls=0
+race.results A=CONFIRMED B=REJECTED
+race.confirmed count=1
+2026-11-06T18:01:03.334Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=900 end=960
+2026-11-06T18:01:05.335Z INFO booking.rejected room=WEH-5409 start=900 end=960 reason=slot already held
+race.gate target=hasOverlap call=2 paused=false fired=false calls=0
+race.results A=CONFIRMED B=REJECTED
+race.confirmed count=1
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.053 s -- in edu.cmu.cs214.lab10.harness.RaceTest
+[INFO] BUILD SUCCESS
+```
+
+**Is the milestone-1 test still testing anything?** Yes, its final-state
+assertion still checks that two requests produce just one stored confirmation.
+However, it no longer forces the original race: `book()` no longer calls
+`hasOverlap()` through `PausingStore`, and the new atomic method is a direct
+pass-through. The diagnostics explicitly show `paused=false`, `fired=false`,
+and `calls=0`. A finishes while the test waits two seconds for a gate that is
+never reached; B then rejects. The milestone-2 test behaves the same way.
+Their combined four-second runtime is expected, but their greens alone do
+not demonstrate concurrent execution or prove atomicity. Both historical
+tests were retained unchanged.
+
+To exercise the new path under competing requests, added
+`BookingServiceTest.concurrentServicesSharingAStoreConfirmOnlyOnce()`: two
+different service instances share the real store, and both worker threads
+reach a `CyclicBarrier` before calling `book()` on the same room and slot.
+Bounded futures surface worker failures; ordinary `for` loops count outcomes
+and join threads. It asserts one confirmation, one rejection, and exactly one
+stored confirmation. The test covers competing callers; the atomicity argument
+comes from the lock spanning both the scan and insertion, not from claiming
+that one test run explores every possible interleaving.
+
+**Full suite:** `mvn -B '-Dstyle.color=never' test` passed all 14 tests at
+2026-11-06 13:01:47 -05:00 (exit code 0). Verbatim output excerpts:
+
+```text
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.043 s -- in edu.cmu.cs214.lab10.domain.BookingTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.020 s -- in edu.cmu.cs214.lab10.harness.RaceTest
+2026-11-06T18:01:47.233Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=540 end=600
+2026-11-06T18:01:47.233Z INFO booking.rejected room=WEH-5409 start=540 end=600 reason=slot already held
+race.sharedStore confirmed=1 rejected=1 stored=1
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.019 s -- in edu.cmu.cs214.lab10.service.BookingServiceTest
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+**What runs one at a time now / cost line:** for callers sharing one store,
+the entire availability-check-plus-insert operation now runs one at a time.
+Previously each store call was individually serialized, but another caller
+could enter between a service's check and its insert. Now another booking,
+waitlist insertion, snapshot read, or cancellation/promotion must wait for
+both steps to finish. This includes different rooms and different service
+instances sharing that store, so the larger critical section reduces
+opportunities for concurrency. The scan is still linear in stored bookings;
+validation, logging, and approximate statistics remain outside the store lock.
+Separate store instances have separate monitors.
+
+**What was left unfixed:**
+
+- `BookingStats` lost updates and stale reads remain accepted approximate
+  reporting; they do not control availability and exact counters would add work
+  to a separate concern.
+- Per-service ID sequences can still collide across different service instances
+  (for example when they book different free slots); this is a separate issue
+  from the ticket's distinct-ID double booking and needs its own ID policy.
+- Raw `insert()` remains available and unchecked for existing callers such as
+  waitlist insertion. Booking confirmation now uses the atomic method; redesigning
+  or restricting the low-level storage API is outside this ticket.
+- The catalog, immutable records, snapshots, logging formatter, and existing
+  atomic cancellation/promotion needed no change for the ticket.

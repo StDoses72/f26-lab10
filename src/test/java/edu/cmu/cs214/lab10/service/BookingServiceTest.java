@@ -14,10 +14,17 @@ import edu.cmu.cs214.lab10.store.InMemoryBookingStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-/** The booking API, one caller at a time. */
+/** The booking API, including concurrent callers sharing the same store. */
 class BookingServiceTest {
 
     private static final String WEAN = "WEH-5409";
@@ -55,6 +62,54 @@ class BookingServiceTest {
         assertTrue(second.isRejected());
         assertEquals("slot already held", second.reason());
         assertEquals(1, confirmedCount(WEAN, 540, 630));
+    }
+
+    @Test
+    void concurrentServicesSharingAStoreConfirmOnlyOnce()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        BookingService kiosk = new BookingService(store, ROOMS);
+        CyclicBarrier start = new CyclicBarrier(2);
+        List<FutureTask<BookingResult>> results = new ArrayList<>();
+        List<Thread> customers = new ArrayList<>();
+        for (BookingService caller : List.of(service, kiosk)) {
+            FutureTask<BookingResult> result = new FutureTask<>(new Callable<>() {
+                @Override
+                public BookingResult call()
+                        throws InterruptedException, BrokenBarrierException, TimeoutException {
+                    start.await(2, TimeUnit.SECONDS);
+                    return caller.book(WEAN, 540, 600);
+                }
+            });
+            results.add(result);
+            customers.add(new Thread(result));
+        }
+
+        try {
+            for (Thread customer : customers) {
+                customer.start();
+            }
+            int confirmed = 0;
+            int rejected = 0;
+            for (FutureTask<BookingResult> future : results) {
+                BookingResult result = future.get(2, TimeUnit.SECONDS);
+                if (result.isConfirmed()) {
+                    confirmed++;
+                }
+                if (result.isRejected()) {
+                    rejected++;
+                }
+            }
+            int stored = confirmedCount(WEAN, 540, 600);
+            System.out.println("race.sharedStore confirmed=" + confirmed
+                    + " rejected=" + rejected + " stored=" + stored);
+            assertEquals(1, confirmed);
+            assertEquals(1, rejected);
+            assertEquals(1, stored);
+        } finally {
+            for (Thread customer : customers) {
+                customer.join(2_000L);
+            }
+        }
     }
 
     @Test

@@ -29,6 +29,14 @@ public interface BookingStore {
     void insert(Booking booking);
 
     /**
+     * Checks for overlapping CONFIRMED bookings and inserts the candidate only
+     * if none exist, atomically with respect to all other store operations.
+     *
+     * @return true if inserted, or false if the slot is taken and nothing changed
+     */
+    boolean insertIfAvailable(Booking booking);
+
+    /**
      * Every booking held for the room, in insertion order, in every status.
      *
      * @return a snapshot the caller owns; later writes to the store do not
