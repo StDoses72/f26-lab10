@@ -13,8 +13,8 @@ Keep it short and specific. Point at methods, call sites, and the invariant.
 
 ### Suspect list
 
-Reviewed the shipped domain, service, store, and harness code. The teammate's
-`proposed-fix.diff` has not been opened or applied.
+At milestone 1, reviewed the shipped domain, service, store, and harness code.
+The teammate's `proposed-fix.diff` had not been opened or applied at that point.
 
 | # | What you found (method, field, or class) | Verdict, in one line |
 |---|---|---|
@@ -142,19 +142,105 @@ only the new invariant assertion failed, as required for milestone 1.
 [INFO] BUILD FAILURE
 ```
 
-Production code is unchanged. Milestones 2 and 3 remain pending.
+At the end of milestone 1, production code was unchanged; milestones 2 and 3
+were still pending. The following sections record later work.
 
 ---
 
 ## Milestone 2: the patch a teammate sent
 
-**Your milestone-1 test on the patched code.** Green or red. Paste the result.
+Applied the supplied patch with `git apply proposed-fix.diff` after milestone 1.
+`git diff --stat` confirmed exactly seven added lines in `BookingService.java`.
+It adds a second `hasOverlap()` immediately before `insert()`, without making
+the last check and the write atomic.
 
-**The re-aimed run.** Method name, call index, the pasted result, and one line
-on why that aim tests the patch rather than sidestepping it.
+**Your milestone-1 test on the patched code: GREEN.** Ran the original test
+before changing the test class:
 
-**Your verdict.** Accept or reject, and what your milestone-1 result does and
-does not show about the patch.
+```powershell
+mvn -B '-Dstyle.color=never' '-Dtest=RaceTest#concurrentBookingsForTheSameSlotConfirmOnlyOnce' test
+```
+
+Verbatim output excerpts (exit code 0):
+
+```text
+2026-11-06T17:50:06.710Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=900 end=960
+2026-11-06T17:50:06.715Z INFO booking.rejected room=WEH-5409 start=900 end=960 reason=slot already held
+race.gate target=hasOverlap call=1 paused=true fired=true calls=4
+race.results A=REJECTED B=CONFIRMED
+race.confirmed count=1
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.055 s -- in edu.cmu.cs214.lab10.harness.RaceTest
+[INFO] BUILD SUCCESS
+```
+
+The gate still fired, so this green result is not caused by missing the pause.
+A pauses after its first check; B completes both of its checks and inserts;
+when A resumes, the added second check sees B's booking and rejects A. This
+shows the patch handles the milestone-1 schedule, not every possible schedule.
+
+**The re-aimed run: RED.** Kept the original test and added
+`concurrentBookingsAfterRecheckConfirmOnlyOnce()`. Both tests share the same
+two-thread setup and final-state assertion; only the target call index differs.
+The new aim is `new PausingStore(real, "hasOverlap", 2)`.
+
+Because B starts only after A reaches the gate, call 2 is A's newly added
+defensive recheck. Pausing after that check directly exercises the patch's
+remaining check/write gap; it does not bypass the recheck.
+
+| Step | Thread A | Thread B |
+|---|---|---|
+| t1 | First check (call 1) returns `false`; create booking `bk-1`. | |
+| t2 | Second check (call 2) computes `false`; release the store lock and pause before returning that saved answer. | |
+| t3 | | First check (call 3) returns `false`; create booking `bk-2`. |
+| t4 | | Second check (call 4) returns `false`. |
+| t5 | | Insert `bk-2` as CONFIRMED and finish. |
+| t6 | Resume, receive the saved `false`, and insert `bk-1` as CONFIRMED. | |
+
+```powershell
+mvn -B '-Dstyle.color=never' '-Dtest=RaceTest#concurrentBookingsAfterRecheckConfirmOnlyOnce' test
+```
+
+Verbatim output excerpt (exit code 1):
+
+```text
+2026-11-06T17:50:29.452Z INFO booking.confirmed booking=bk-2 room=WEH-5409 start=900 end=960
+2026-11-06T17:50:29.455Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=900 end=960
+race.gate target=hasOverlap call=2 paused=true fired=true calls=4
+race.results A=CONFIRMED B=CONFIRMED
+race.confirmed count=2
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.062 s <<< FAILURE! -- in edu.cmu.cs214.lab10.harness.RaceTest
+[ERROR] edu.cmu.cs214.lab10.harness.RaceTest.concurrentBookingsAfterRecheckConfirmOnlyOnce -- Time elapsed: 0.041 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: A room must have at most one CONFIRMED booking covering the same minute ==> expected: <1> but was: <2>
+```
+
+**Your verdict: REJECT the patch.** The re-aimed test still creates two
+CONFIRMED bookings for the same room and minutes, violating the ticket's
+invariant. Re-reading availability moves the race window to after the final
+check; it does not close it. The second check at patched `BookingService.java`
+lines 78-80 and the insert at line 81 are separate store calls. The added
+comment claiming there is no remaining window is contradicted by this run.
+The original green test proves one interleaving is handled; it does not prove
+atomicity or exclude the demonstrated counterexample. Both runs report a
+fired gate and finish well before its two-second timeout.
+
+**Full-suite verification:** `mvn -B '-Dstyle.color=never' test` exited 1 at
+2026-11-06 12:51:10 -05:00. The original 11 tests and milestone-1 race test pass;
+only the new re-aimed test fails. It reproduced the same bad state again:
+
+```text
+2026-11-06T17:51:10.508Z INFO booking.confirmed booking=bk-2 room=WEH-5409 start=900 end=960
+2026-11-06T17:51:10.509Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=900 end=960
+race.gate target=hasOverlap call=2 paused=true fired=true calls=4
+race.results A=CONFIRMED B=CONFIRMED
+race.confirmed count=2
+[ERROR] Tests run: 13, Failures: 1, Errors: 0, Skipped: 0
+[INFO] BUILD FAILURE
+```
+
+The teammate's patch remains applied only to reproduce this review evidence;
+it is not accepted as the final fix. Before milestone 3, undo it with
+`git apply -R proposed-fix.diff` and build the chosen fix on the shipped code.
+Milestone 3 has not been started.
 
 ---
 

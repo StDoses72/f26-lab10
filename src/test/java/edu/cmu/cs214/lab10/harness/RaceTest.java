@@ -22,8 +22,19 @@ class RaceTest {
     @Test
     void concurrentBookingsForTheSameSlotConfirmOnlyOnce()
             throws InterruptedException, ExecutionException, TimeoutException {
+        assertOneConfirmationWhenOverlapCheckPauses(1);
+    }
+
+    @Test
+    void concurrentBookingsAfterRecheckConfirmOnlyOnce()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        assertOneConfirmationWhenOverlapCheckPauses(2);
+    }
+
+    private void assertOneConfirmationWhenOverlapCheckPauses(int callIndex)
+            throws InterruptedException, ExecutionException, TimeoutException {
         InMemoryBookingStore real = new InMemoryBookingStore();
-        PausingStore gated = new PausingStore(real, "hasOverlap", 1);
+        PausingStore gated = new PausingStore(real, "hasOverlap", callIndex);
         BookingService service = new BookingService(gated,
                 List.of(new Room("WEH-5409", "Wean 5409", 12)));
         Callable<BookingResult> request = new Callable<>() {
@@ -52,7 +63,7 @@ class RaceTest {
         // Future results surface worker failures instead of silently losing them.
         BookingResult bookingA = resultA.get(PausingStore.TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
         BookingResult bookingB = resultB.get(PausingStore.TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
-        System.out.println("race.gate target=hasOverlap call=1 paused=" + paused
+        System.out.println("race.gate target=hasOverlap call=" + callIndex + " paused=" + paused
                 + " fired=" + gated.fired() + " calls=" + gated.targetCallCount());
         System.out.println("race.results A=" + bookingA.outcome() + " B=" + bookingB.outcome());
 

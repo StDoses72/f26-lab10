@@ -71,6 +71,13 @@ public final class BookingService {
             return reject(roomId, startMinute, endMinute, "slot already held");
         }
         Booking booking = new Booking(nextId(), roomId, startMinute, endMinute, BookingStatus.CONFIRMED);
+        // Defensive re-check. Another request can take the slot between the
+        // check above and the insert below, so read the store once more right
+        // before writing. With the freshest possible answer in hand there is no
+        // window left for a second booking to slip through.
+        if (store.hasOverlap(roomId, startMinute, endMinute)) {
+            return reject(roomId, startMinute, endMinute, "slot already held");
+        }
         store.insert(booking);
         stats.recordConfirmed();
         BookingLog.confirmed(booking);
