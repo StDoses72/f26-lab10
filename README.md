@@ -74,3 +74,5 @@ depends on them. Count the bookings in the store when you need an exact number.
 
 See the Lab 10 handout on the course page for the three milestones you show a
 TA.
+
+AI assistance: OpenAI Codex (GPT-6) for milestone 1 code review, race-test implementation, and evidence documentation.

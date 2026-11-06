@@ -1,12 +1,71 @@
 package edu.cmu.cs214.lab10.harness;
 
-/**
- * Where your concurrency tests go.
- *
- * <p>Empty on purpose. The wiring you need is written out below; what to aim it
- * at, and what scenario to drive through it, is yours to work out.
- */
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import edu.cmu.cs214.lab10.domain.Booking;
+import edu.cmu.cs214.lab10.domain.BookingResult;
+import edu.cmu.cs214.lab10.domain.BookingStatus;
+import edu.cmu.cs214.lab10.domain.Room;
+import edu.cmu.cs214.lab10.service.BookingService;
+import edu.cmu.cs214.lab10.store.InMemoryBookingStore;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import org.junit.jupiter.api.Test;
+
+/** Deterministic reproduction of the double-booking ticket. */
 class RaceTest {
+
+    @Test
+    void concurrentBookingsForTheSameSlotConfirmOnlyOnce()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        InMemoryBookingStore real = new InMemoryBookingStore();
+        PausingStore gated = new PausingStore(real, "hasOverlap", 1);
+        BookingService service = new BookingService(gated,
+                List.of(new Room("WEH-5409", "Wean 5409", 12)));
+        Callable<BookingResult> request = new Callable<>() {
+            @Override
+            public BookingResult call() {
+                return service.book("WEH-5409", 900, 960);
+            }
+        };
+        FutureTask<BookingResult> resultA = new FutureTask<>(request);
+        FutureTask<BookingResult> resultB = new FutureTask<>(request);
+        Thread customerA = new Thread(resultA, "customer-A");
+        Thread customerB = new Thread(resultB, "customer-B");
+
+        boolean paused;
+        try {
+            customerA.start();
+            paused = gated.awaitPaused();
+            customerB.start();
+            customerB.join(PausingStore.TIMEOUT_MILLIS);
+        } finally {
+            gated.release();
+            customerA.join(PausingStore.TIMEOUT_MILLIS);
+            customerB.join(PausingStore.TIMEOUT_MILLIS);
+        }
+
+        // Future results surface worker failures instead of silently losing them.
+        BookingResult bookingA = resultA.get(PausingStore.TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+        BookingResult bookingB = resultB.get(PausingStore.TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+        System.out.println("race.gate target=hasOverlap call=1 paused=" + paused
+                + " fired=" + gated.fired() + " calls=" + gated.targetCallCount());
+        System.out.println("race.results A=" + bookingA.outcome() + " B=" + bookingB.outcome());
+
+        int confirmed = 0;
+        for (Booking booking : real.bookingsForRoom("WEH-5409")) {
+            if (booking.status() == BookingStatus.CONFIRMED && booking.overlaps(900, 960)) {
+                confirmed++;
+            }
+        }
+        System.out.println("race.confirmed count=" + confirmed);
+        assertEquals(1, confirmed,
+                "A room must have at most one CONFIRMED booking covering the same minute");
+    }
 
     // ------------------------------------------------------------------
     // Wiring example 1: wrap the store

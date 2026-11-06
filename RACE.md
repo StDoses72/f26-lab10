@@ -71,8 +71,75 @@ The prediction above will remain unchanged when the results are added below.
 
 ### Your race test
 
-Pending: implement the test after committing this prediction, then record two
-separate failing runs with their timestamped logs here.
+**Prediction commit:** `882e701` (2026-11-06 12:39:17 -05:00), made before
+implementing or running the race test. The first run below began afterward.
+
+**Aim:** `new PausingStore(real, "hasOverlap", 1)`. A's first availability
+answer is already `false` when it pauses, but its booking has not been inserted.
+B's second check passes straight through the one-shot gate and still sees an
+empty store. After B finishes, releasing A delivers the stale answer. This
+forces the predicted check/check/insert/insert schedule without `sleep` or
+repeated attempts.
+
+The test uses two named threads and `FutureTask` results so worker exceptions
+reach JUnit. It releases the gate in `finally`, uses bounded waits, and counts
+CONFIRMED overlapping bookings directly in the real store using a `for` loop.
+The assertion checks the business invariant, not a required thread order or
+approximate statistics. Gate diagnostics are logged so later green runs can
+be checked for whether they still exercise this pause.
+
+Run each time from the repository root:
+
+```powershell
+mvn -B '-Dstyle.color=never' '-Dtest=RaceTest' test
+```
+
+**Run 1 — exit code 1, verbatim test-output excerpt:**
+
+```text
+[INFO] Running edu.cmu.cs214.lab10.harness.RaceTest
+2026-11-06T17:40:00.165Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=900 end=960
+2026-11-06T17:40:00.168Z INFO booking.confirmed booking=bk-2 room=WEH-5409 start=900 end=960
+race.gate target=hasOverlap call=1 paused=true fired=true calls=2
+race.results A=CONFIRMED B=CONFIRMED
+race.confirmed count=2
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.057 s <<< FAILURE! -- in edu.cmu.cs214.lab10.harness.RaceTest
+[ERROR] edu.cmu.cs214.lab10.harness.RaceTest.concurrentBookingsForTheSameSlotConfirmOnlyOnce -- Time elapsed: 0.038 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: A room must have at most one CONFIRMED booking covering the same minute ==> expected: <1> but was: <2>
+```
+
+**Run 2 — exit code 1, verbatim test-output excerpt:**
+
+```text
+[INFO] Running edu.cmu.cs214.lab10.harness.RaceTest
+2026-11-06T17:40:07.638Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=900 end=960
+2026-11-06T17:40:07.641Z INFO booking.confirmed booking=bk-2 room=WEH-5409 start=900 end=960
+race.gate target=hasOverlap call=1 paused=true fired=true calls=2
+race.results A=CONFIRMED B=CONFIRMED
+race.confirmed count=2
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.063 s <<< FAILURE! -- in edu.cmu.cs214.lab10.harness.RaceTest
+[ERROR] edu.cmu.cs214.lab10.harness.RaceTest.concurrentBookingsForTheSameSlotConfirmOnlyOnce -- Time elapsed: 0.042 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: A room must have at most one CONFIRMED booking covering the same minute ==> expected: <1> but was: <2>
+```
+
+**Prediction versus observation:** both runs match the predicted result: the
+gate fired on call 1, both requests returned CONFIRMED, and the store contained
+two overlapping confirmations with different IDs. The confirmations occur in
+milliseconds, well before the gate's 2-second timeout; the outcome is not a
+timeout or a worker exception. No correction to the prediction was needed.
+
+**Full-suite check after adding the test:** `mvn -B '-Dstyle.color=never' test`
+also exited 1 at 2026-11-06 12:40:22 -05:00. All original 11 tests still passed;
+only the new invariant assertion failed, as required for milestone 1.
+
+```text
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.038 s -- in edu.cmu.cs214.lab10.domain.BookingTest
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.018 s -- in edu.cmu.cs214.lab10.service.BookingServiceTest
+[ERROR] Tests run: 12, Failures: 1, Errors: 0, Skipped: 0
+[INFO] BUILD FAILURE
+```
+
+Production code is unchanged. Milestones 2 and 3 remain pending.
 
 ---
 
