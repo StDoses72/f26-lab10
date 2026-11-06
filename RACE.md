@@ -71,6 +71,9 @@ The prediction above will remain unchanged when the results are added below.
 
 ### Your race test
 
+Local toolchain: Maven 3.9.16 and Oracle JDK 25.0.4.1, compiling with the
+repository's Java 21 release setting. The CI workflow uses Temurin JDK 21.
+
 **Prediction commit:** `882e701` (2026-11-06 12:39:17 -05:00), made before
 implementing or running the race test. The first run below began afterward.
 
